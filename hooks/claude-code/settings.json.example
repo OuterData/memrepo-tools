@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=claude-code bash \"$MEMREPO_TOOLS/hooks/shared/inject-briefing.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=claude-code bash \"$MEMREPO_TOOLS/hooks/shared/inject-briefing.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=claude-code bash \"$MEMREPO_TOOLS/hooks/shared/capture-session-end.sh\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=cline bash \"$MEMREPO_TOOLS/hooks/shared/inject-briefing.sh\"" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=cline bash \"$MEMREPO_TOOLS/hooks/shared/inject-briefing.sh\"" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=cline bash \"$MEMREPO_TOOLS/hooks/shared/capture-session-end.sh\"" }
+        ]
+      }
+    ]
+  }
+}

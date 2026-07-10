@@ -1,0 +1,11 @@
+{
+  "SessionStart": [
+    { "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=codex-cli bash \"$MEMREPO_TOOLS/hooks/shared/inject-briefing.sh\"" }
+  ],
+  "UserPromptSubmit": [
+    { "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=codex-cli bash \"$MEMREPO_TOOLS/hooks/shared/inject-briefing.sh\"" }
+  ],
+  "Stop": [
+    { "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=codex-cli bash \"$MEMREPO_TOOLS/hooks/shared/capture-session-end.sh\"" }
+  ]
+}

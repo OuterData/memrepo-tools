@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=cursor bash \"$MEMREPO_TOOLS/hooks/shared/inject-briefing.sh\"" }
+    ],
+    "beforeSubmitPrompt": [
+      { "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=cursor bash \"$MEMREPO_TOOLS/hooks/shared/inject-briefing.sh\"" }
+    ],
+    "stop": [
+      { "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=cursor bash \"$MEMREPO_TOOLS/hooks/shared/capture-session-end.sh\"" }
+    ]
+  }
+}
