@@ -1,0 +1,17 @@
+# memrepo-engine — GitLab CI template.
+# Copy to .gitlab-ci.yml in YOUR memrepo repo. Pair with a GitLab CI
+# Schedule (Settings > CI/CD > Schedules) for the "hourly" trigger --
+# GitLab doesn't run cron syntax inline the way GitHub Actions does.
+memrepo-engine:
+  image: node:22
+  script:
+    - npm install -g memrepo-tools
+    - memrepo-engine "$CI_PROJECT_DIR"
+    - git config user.email "memrepo@outer.bot"
+    - git config user.name "outer.bot memrepo engine"
+    - git add -A
+    - 'git diff --staged --quiet || git commit -m "outer.bot: engine run $(date -u +%Y-%m-%dT%H:%M:%SZ)"'
+    - git push "https://oauth2:${MEMREPO_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" HEAD:${CI_COMMIT_REF_NAME}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"

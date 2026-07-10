@@ -1,0 +1,34 @@
+# memrepo-engine — GitHub Actions template.
+# Copy to .github/workflows/memrepo-engine.yml in YOUR memrepo repo (not
+# your code repo). Same engine as every other CI target — this workflow
+# is only a scheduler.
+name: memrepo engine
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # hourly; adjust to taste
+  workflow_dispatch: {}
+
+jobs:
+  run-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install memrepo-tools
+        run: npm install -g memrepo-tools
+
+      - name: Run engine
+        run: memrepo-engine "$GITHUB_WORKSPACE"
+
+      - name: Commit and push engine output
+        run: |
+          git config user.email "memrepo@outer.bot"
+          git config user.name "outer.bot memrepo engine"
+          git add -A
+          git diff --staged --quiet || git commit -m "outer.bot: engine run $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push

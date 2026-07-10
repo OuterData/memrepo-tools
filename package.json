@@ -4,7 +4,8 @@
   "description": "Validation and engine tooling for the memrepo format (see memrepo-spec).",
   "type": "module",
   "bin": {
-    "memrepo": "./validate/cli.js"
+    "memrepo": "./validate/cli.js",
+    "memrepo-engine": "./engine/run.js"
   },
   "scripts": {
     "validate": "node ./validate/cli.js"

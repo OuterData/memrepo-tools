@@ -1,0 +1,8 @@
+[Unit]
+Description=memrepo engine run
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=MEMREPO_PATH=/opt/memrepo
+ExecStart=/opt/memrepo-tools/ci/cron-systemd/memrepo-engine.sh
