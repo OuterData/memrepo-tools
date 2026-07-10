@@ -1,0 +1,16 @@
+{
+  "name": "memrepo-tools",
+  "version": "0.1.0",
+  "description": "Validation and engine tooling for the memrepo format (see memrepo-spec).",
+  "type": "module",
+  "bin": {
+    "memrepo": "./validate/cli.js"
+  },
+  "scripts": {
+    "validate": "node ./validate/cli.js"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "license": "MIT"
+}
