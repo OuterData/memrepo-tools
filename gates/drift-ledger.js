@@ -79,8 +79,15 @@ export function bumpAdherenceStats(memrepoPath, projectSlug, { passes = 0, block
  *  "never block the user's session over a failed push" convention. */
 export function commitDriftLedger(memrepoPath, projectSlug) {
   try {
-    execFileSync('git', ['-C', memrepoPath, 'add',
-      `projects/${projectSlug}/drift-ledger.md`, `projects/${projectSlug}/adherence-stats.json`], { stdio: 'pipe' })
+    const projectDir = path.join(memrepoPath, 'projects', projectSlug)
+    const addPaths = [`projects/${projectSlug}/adherence-stats.json`]
+    // drift-ledger.md is only created on an actual escalation - unconditionally
+    // adding a pathspec that doesn't exist yet makes `git add` fail *entirely*
+    // (exit 128, nothing staged, not just that one path), which silently
+    // dropped every stats-only commit (a converged pass, a resolved block)
+    // until the first real drift ever happened to create the file.
+    if (existsSync(path.join(projectDir, 'drift-ledger.md'))) addPaths.push(`projects/${projectSlug}/drift-ledger.md`)
+    execFileSync('git', ['-C', memrepoPath, 'add', ...addPaths], { stdio: 'pipe' })
     const status = execFileSync('git', ['-C', memrepoPath, 'status', '--porcelain'], { stdio: 'pipe' }).toString()
     if (!status.trim()) return true // nothing staged (e.g., stats bump was a no-op — shouldn't happen, but harmless)
     execFileSync('git', ['-C', memrepoPath, '-c', 'user.email=memrepo@outer.bot', '-c', 'user.name=outer.bot memrepo (drift)',

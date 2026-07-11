@@ -94,6 +94,25 @@ assert(stats.passes === 1, `passes incremented to 1 on convergence (got ${stats?
 assert(stats.blocks === 2, `blocks unchanged on a clean pass (got ${stats?.blocks})`)
 assert(stats.drifts === 0, `drifts still 0 (got ${stats?.drifts})`)
 
+// Critical: verify the PUSH actually landed on the remote at this point,
+// before drift-ledger.md has ever been created by anything. This exact
+// spot caught a real bug: commitDriftLedger() unconditionally `git add`ed
+// drift-ledger.md even when it didn't exist yet, which makes `git add`
+// fail *entirely* (not just skip that path) and silently drop the push -
+// stats would locally look right but never reach the remote until the
+// first real drift happened to create the missing file. A check placed
+// only after scenario B (which does escalate) would never have caught
+// this, since the eventual escalation papers over every earlier failure.
+const earlyCheckClone = path.join(work, 'check-early')
+execFileSync('git', ['clone', '-q', bareRepo, earlyCheckClone])
+const earlyStatsPath = path.join(earlyCheckClone, 'projects', 'kds-app', 'adherence-stats.json')
+assert(existsSync(earlyStatsPath), 'adherence-stats.json reached the remote before any drift-ledger.md ever existed')
+if (existsSync(earlyStatsPath)) {
+  const earlyRemoteStats = JSON.parse(readFileSync(earlyStatsPath, 'utf8'))
+  assert(earlyRemoteStats.passes === 1 && earlyRemoteStats.blocks === 2, `remote stats correct pre-drift (got ${JSON.stringify(earlyRemoteStats)})`)
+}
+rmSync(earlyCheckClone, { recursive: true, force: true })
+
 // --- Scenario B: forced non-convergence escalates to drift-ledger.md and
 // bumps drifts. Fresh session so attempt counters start clean. ---
 
