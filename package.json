@@ -8,7 +8,8 @@
     "memrepo-engine": "./engine/run.js"
   },
   "scripts": {
-    "validate": "node ./validate/cli.js"
+    "validate": "node ./validate/cli.js",
+    "test": "node ./test/adherence-stats.test.mjs"
   },
   "dependencies": {
     "js-yaml": "^4.1.0",

@@ -12,12 +12,12 @@
 // allows completion at that point (can't block forever), but the
 // violation is now on record, not swallowed.
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
-import { tmpdir } from 'node:os'
 import yaml from 'js-yaml'
-import { appendDriftEntry, commitDriftLedger } from './drift-ledger.js'
+import { appendDriftEntry, bumpAdherenceStats, commitDriftLedger } from './drift-ledger.js'
+import { incrementAttempts, resetAttempts, takeBlocked } from './session-state.js'
 
 const MAX_PASSES = Number(process.env.MEMREPO_GATE_MAX_PASSES || 3)
 
@@ -56,31 +56,6 @@ function runCheck(rule, cwd) {
   }
 }
 
-// Per-session attempt counter — Stop can fire multiple times as Claude
-// retries after a block; state needs to persist across those separate
-// process invocations, hence a file rather than an in-memory counter.
-function statePath(sessionId) {
-  const dir = path.join(tmpdir(), 'memrepo-gate-state')
-  mkdirSync(dir, { recursive: true })
-  return path.join(dir, `${sessionId}.json`)
-}
-
-function getAttempts(sessionId) {
-  const p = statePath(sessionId)
-  if (!existsSync(p)) return 0
-  try { return JSON.parse(readFileSync(p, 'utf8')).attempts || 0 } catch { return 0 }
-}
-
-function incrementAttempts(sessionId) {
-  const n = getAttempts(sessionId) + 1
-  writeFileSync(statePath(sessionId), JSON.stringify({ attempts: n }))
-  return n
-}
-
-function resetAttempts(sessionId) {
-  writeFileSync(statePath(sessionId), JSON.stringify({ attempts: 0 }))
-}
-
 function main() {
   const raw = readStdin()
   if (!raw) process.exit(0)
@@ -95,18 +70,32 @@ function main() {
 
   const projectSlug = process.env.PROJECT_SLUG || slugify(path.basename(cwd))
   const gates = loadGateRules(memrepoPath, projectSlug)
+  // No gates configured for this project — nothing to check, and nothing
+  // to count. Skip stats entirely rather than committing a no-op every
+  // single turn (Stop fires on every assistant turn, gated or not).
   if (gates.length === 0) { resetAttempts(sessionId); process.exit(0) }
 
   const failures = gates.map(g => ({ rule: g, result: runCheck(g, cwd) })).filter(r => !r.result.pass)
 
   if (failures.length === 0) {
     resetAttempts(sessionId)
+    const blocked = takeBlocked(sessionId)
+    bumpAdherenceStats(memrepoPath, projectSlug, { passes: 1, blocks: blocked })
+    commitDriftLedger(memrepoPath, projectSlug)
     process.exit(0)
   }
 
   const attempts = incrementAttempts(sessionId)
 
   if (attempts < MAX_PASSES) {
+    // Stop itself refusing completion is a block, same as a PreToolUse
+    // block — count this attempt's failures plus anything PreToolUse
+    // already blocked this turn, but don't count it as a "pass" yet;
+    // convergence (or escalation) is recorded below once the outcome is
+    // final.
+    const blocked = takeBlocked(sessionId)
+    bumpAdherenceStats(memrepoPath, projectSlug, { blocks: failures.length + blocked })
+    commitDriftLedger(memrepoPath, projectSlug)
     const lines = failures.map(f => `- "${f.rule.id}": ${f.rule.rule}\n  Check failed: ${f.result.detail.trim().split('\n')[0]}`)
     process.stderr.write(`Gate check(s) failing (attempt ${attempts}/${MAX_PASSES}):\n${lines.join('\n')}\n`)
     process.exit(2)
@@ -123,6 +112,8 @@ function main() {
       attempts,
     })
   }
+  const blocked = takeBlocked(sessionId)
+  bumpAdherenceStats(memrepoPath, projectSlug, { drifts: failures.length, blocks: blocked })
   commitDriftLedger(memrepoPath, projectSlug)
   resetAttempts(sessionId)
   process.stderr.write(`Gate check(s) still failing after ${MAX_PASSES} attempts — escalated to drift-ledger.md, allowing completion.\n`)

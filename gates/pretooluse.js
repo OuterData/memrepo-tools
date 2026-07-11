@@ -22,6 +22,7 @@ import path from 'node:path'
 import { tmpdir } from 'node:os'
 import yaml from 'js-yaml'
 import { minimatch } from 'minimatch'
+import { incrementBlocked } from './session-state.js'
 
 function readStdin() {
   try {
@@ -118,6 +119,7 @@ function main() {
   const toolName = payload.tool_name
   const toolInput = payload.tool_input || {}
   const cwd = payload.cwd || process.cwd()
+  const sessionId = payload.session_id || 'unknown-session'
   const filePath = toolInput.file_path
   if (!filePath || (toolName !== 'Write' && toolName !== 'Edit')) process.exit(0)
 
@@ -138,6 +140,7 @@ function main() {
   for (const gate of matchingGates) {
     const result = evaluateGate(gate, cwd, relPath, newContent)
     if (!result.pass) {
+      incrementBlocked(sessionId)
       process.stderr.write(`Blocked by memrepo gate "${gate.id}": ${gate.rule}\n`)
       if (result.detail) process.stderr.write(`Check failed: ${result.detail}\n`)
       process.exit(2)
