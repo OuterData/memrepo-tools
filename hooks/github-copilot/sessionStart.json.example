@@ -2,6 +2,9 @@
   "sessionStart": [
     { "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=github-copilot bash \"$MEMREPO_TOOLS/hooks/shared/inject-briefing.sh\"" }
   ],
+  "preToolUse": [
+    { "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" node \"$MEMREPO_TOOLS/gates/pretooluse.js\"" }
+  ],
   "sessionEnd": [
     { "command": "MEMREPO_TOOLS=\"$HOME/.outerbot/memrepo-tools\"; MEMREPO_PATH=\"$HOME/.outerbot/memrepo\" TOOL_NAME=github-copilot bash \"$MEMREPO_TOOLS/hooks/shared/capture-session-end.sh\"" }
   ]
