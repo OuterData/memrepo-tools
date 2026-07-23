@@ -212,5 +212,28 @@ assert(/no-pm2-restart-by-name/.test(blockedPm2.stderr), 'stderr names the pm2-r
 const allowedPm2 = run(pretooluse, { tool_name: 'Bash', tool_input: { command: 'sudo -u outerbot pm2 startOrRestart /home/outerbot/api.outer.bot/ecosystem.config.js --update-env' }, cwd: cmdProjectDir, session_id: 'cmd-session' }, cmdEnv)
 assert(allowedPm2.code === 0, '"pm2 startOrRestart <ecosystem-file> --update-env" is allowed')
 
+// Bash/Read command-pattern blocks have no persistent artifact for
+// stop.js to find later (a blocked command ran nowhere) -- confirm
+// pretooluse.js records the block to the ledger itself, synchronously,
+// rather than relying on the fold-into-Stop mechanism every other gate
+// type uses (which would silently never record these at all).
+const cmdStatsPath = path.join(memrepoClone, 'projects', 'cmd-project', 'adherence-stats.json')
+const cmdLedgerPath = path.join(memrepoClone, 'projects', 'cmd-project', 'drift-ledger.md')
+assert(existsSync(cmdStatsPath), 'a virtual-path gate block writes adherence-stats.json immediately, without waiting for a Stop hook')
+if (existsSync(cmdStatsPath)) {
+  const cmdStats = JSON.parse(readFileSync(cmdStatsPath, 'utf8'))
+  // 4 real blocks above: cat, the sudo|grep incident command, the Read tool call, pm2 restart
+  assert(cmdStats.blocks === 4, `blocks reflects all 4 real command-gate blocks (got ${cmdStats.blocks})`)
+}
+assert(existsSync(cmdLedgerPath), 'a virtual-path gate block writes drift-ledger.md immediately')
+if (existsSync(cmdLedgerPath)) {
+  const cmdLedger = readFileSync(cmdLedgerPath, 'utf8')
+  assert(cmdLedger.includes('no-secret-content-reads') && cmdLedger.includes('no-pm2-restart-by-name'), 'drift-ledger.md names both violated command-pattern rules')
+}
+const cmdCheckClone = path.join(work, 'check-cmd')
+execFileSync('git', ['clone', '-q', bareRepo, cmdCheckClone])
+assert(existsSync(path.join(cmdCheckClone, 'projects', 'cmd-project', 'adherence-stats.json')), 'the command-gate blocks reached the real remote, not just local disk')
+rmSync(cmdCheckClone, { recursive: true, force: true })
+
 rmSync(work, { recursive: true, force: true })
 console.log(process.exitCode ? '\nSOME CHECKS FAILED' : '\nALL CHECKS PASSED')

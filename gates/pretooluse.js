@@ -41,6 +41,7 @@ import { tmpdir } from 'node:os'
 import yaml from 'js-yaml'
 import { minimatch } from 'minimatch'
 import { incrementBlocked } from './session-state.js'
+import { appendDriftEntry, bumpAdherenceStats, commitDriftLedger } from './drift-ledger.js'
 
 const BASH_COMMAND_VIRTUAL_PATH = '.claude-hooks/pending-bash-command.txt'
 const READ_PATH_VIRTUAL_PATH = '.claude-hooks/pending-read-path.txt'
@@ -180,12 +181,44 @@ function main() {
   const matchingGates = gates.filter(g => g.scope.some(pattern => minimatch(pending.relPath, pattern)))
   if (matchingGates.length === 0) process.exit(0)
 
+  const isVirtualPathGate = pending.relPath === BASH_COMMAND_VIRTUAL_PATH || pending.relPath === READ_PATH_VIRTUAL_PATH
+
   for (const gate of matchingGates) {
     const result = evaluateGate(gate, cwd, pending.relPath, pending.content)
     if (!result.pass) {
       incrementBlocked(sessionId)
       process.stderr.write(`Blocked by memrepo gate "${gate.id}": ${gate.rule}\n`)
       if (result.detail) process.stderr.write(`Check failed: ${result.detail}\n`)
+
+      // Bash/Read command-pattern gates have no persistent artifact for
+      // stop.js's real-state re-check to find later (a blocked command
+      // ran nowhere, unlike a blocked Write/Edit, which leaves a real
+      // file for Stop to re-examine on retry) -- Stop-time folding,
+      // which every other gate type relies on, would silently never
+      // record these blocks at all. The block itself is already the
+      // complete, final outcome for this class of gate (there's no
+      // "the model retries the same shell command differently" loop the
+      // way there's a "the model edits the file again" loop) so it's
+      // recorded immediately, synchronously, right here -- best-effort,
+      // never let a ledger-write failure change whether the tool call
+      // itself gets blocked.
+      if (isVirtualPathGate) {
+        try {
+          appendDriftEntry(memrepoPath, projectSlug, {
+            timestamp: new Date().toISOString(),
+            ruleId: gate.id,
+            ruleText: gate.rule,
+            tier: 'gate',
+            evidence: `Blocked before execution — pending ${toolName} content: ${pending.content.slice(0, 200)}`,
+            attempts: 1,
+          })
+          bumpAdherenceStats(memrepoPath, projectSlug, { blocks: 1 })
+          commitDriftLedger(memrepoPath, projectSlug)
+        } catch {
+          // best-effort — never let a ledger write failure change the block outcome
+        }
+      }
+
       process.exit(2)
     }
   }
