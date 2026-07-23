@@ -1,6 +1,6 @@
 {
   "name": "memrepo-tools",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Validation and engine tooling for the memrepo format (see memrepo-spec).",
   "type": "module",
   "bin": {

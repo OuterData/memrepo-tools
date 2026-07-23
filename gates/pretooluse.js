@@ -16,35 +16,28 @@
 // PreToolUse blocking contract).
 //
 // Stage 3 item 1 — extended beyond Write/Edit to cover Bash and Read.
-// Those tools don't have "pending file content" to check a rule against —
-// the thing a rule needs to see is the COMMAND ITSELF (Bash) or the PATH
-// BEING READ (Read), not any file's contents, and it must be evaluated
-// before the tool runs, never by inspecting output after the fact (by
-// the time a command has run or a file has been read, a secret is
-// already printed — checking output is checking too late). Rather than
-// extend rules.yaml's schema with a new tool-specific shape, this reuses
-// the exact existing check:-command machinery unchanged: the pending
-// command text (Bash) or file path (Read) is treated as the "content" of
-// a virtual file at a fixed, reserved path
-// (`.claude-hooks/pending-bash-command.txt` /
-// `.claude-hooks/pending-read-path.txt`), scoped in rules.yaml exactly
-// like any other file-scoped gate. A rule author writes an ordinary
-// check: command (e.g. `! grep -qE 'pattern' .claude-hooks/pending-bash-
-// command.txt`) against that virtual path — no new rules.yaml fields, no
-// new concepts, same evaluateGate() function, same scratch-copy
-// simulation, same failure semantics as every other gate.
+// Those tools don't have "pending file content" to check a rule against
+// — the thing a rule needs to see is the COMMAND ITSELF (Bash) or the
+// PATH BEING READ (Read), not any file's contents, evaluated before the
+// tool runs, never by inspecting output after the fact. No new
+// rules.yaml schema: the pending command text or read path is treated as
+// the content of a reserved virtual file
+// (.claude-hooks/pending-bash-command.txt /
+// .claude-hooks/pending-read-path.txt), scoped exactly like any other
+// file-scoped gate.
+//
+// Stage 3 item 4 — the actual gate-matching/evaluation logic (scope
+// matching, scratch-copy simulation, check: command execution) now lives
+// in evaluate.js, so outer.bot's own server-side agent loop
+// (api/src/tool-executor.ts) can reuse the identical logic instead of
+// reimplementing it. This file is now a thin CLI wrapper: Claude Code's
+// specific stdin/hook envelope and exit-code contract, nothing else.
 
-import { readFileSync, existsSync, mkdtempSync, writeFileSync, mkdirSync, rmSync, cpSync } from 'node:fs'
-import { execSync } from 'node:child_process'
+import { readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
-import { tmpdir } from 'node:os'
-import yaml from 'js-yaml'
-import { minimatch } from 'minimatch'
+import { loadGateRules, checkGates, BASH_COMMAND_VIRTUAL_PATH, READ_PATH_VIRTUAL_PATH } from './evaluate.js'
 import { incrementBlocked } from './session-state.js'
 import { appendDriftEntry, bumpAdherenceStats, commitDriftLedger } from './drift-ledger.js'
-
-const BASH_COMMAND_VIRTUAL_PATH = '.claude-hooks/pending-bash-command.txt'
-const READ_PATH_VIRTUAL_PATH = '.claude-hooks/pending-read-path.txt'
 
 function readStdin() {
   try {
@@ -56,100 +49,6 @@ function readStdin() {
 
 function slugify(input) {
   return input.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'project'
-}
-
-/** Returns the pending file's new content after this tool call, or null
- *  if this isn't a Write/Edit we can evaluate (e.g. a brand-new file
- *  Edit would target, which Edit can't create anyway — Claude Code
- *  requires Write for new files). */
-function resolveNewContent(toolName, toolInput, currentFilePath) {
-  if (toolName === 'Write') {
-    return toolInput.content ?? toolInput.file_text ?? null
-  }
-  if (toolName === 'Edit') {
-    if (!existsSync(currentFilePath)) return null
-    const current = readFileSync(currentFilePath, 'utf8')
-    if (typeof toolInput.old_string !== 'string' || typeof toolInput.new_string !== 'string') return null
-    if (!current.includes(toolInput.old_string)) return null // edit wouldn't apply cleanly — not this runner's problem to diagnose
-    return current.replace(toolInput.old_string, toolInput.new_string)
-  }
-  return null
-}
-
-/** Stage 3 item 1 — resolves what to evaluate for a pending tool call,
- *  across every tool type this runner understands. Returns
- *  { relPath, content } to check gates against, or null if this tool
- *  call isn't one this runner evaluates at all. relPath is always
- *  forward-slash — real files go through relativeToRepoRoot(), virtual
- *  ones are already in that form by construction. */
-function resolvePendingChange(toolName, toolInput, cwd) {
-  if (toolName === 'Write' || toolName === 'Edit') {
-    const filePath = toolInput.file_path
-    if (!filePath) return null
-    const content = resolveNewContent(toolName, toolInput, filePath)
-    if (content === null) return null // couldn't determine pending content — fail open, don't block on a guess
-    return { relPath: relativeToRepoRoot(filePath, cwd), content }
-  }
-  if (toolName === 'Bash') {
-    if (typeof toolInput.command !== 'string') return null
-    return { relPath: BASH_COMMAND_VIRTUAL_PATH, content: toolInput.command }
-  }
-  if (toolName === 'Read') {
-    if (typeof toolInput.file_path !== 'string') return null
-    return { relPath: READ_PATH_VIRTUAL_PATH, content: toolInput.file_path }
-  }
-  return null
-}
-
-function loadGateRules(memrepoPath, projectSlug) {
-  const rulesPath = path.join(memrepoPath, 'projects', projectSlug, 'rules.yaml')
-  if (!existsSync(rulesPath)) return []
-  let doc
-  try {
-    doc = yaml.load(readFileSync(rulesPath, 'utf8'))
-  } catch {
-    return [] // malformed rules.yaml shouldn't block every tool call — memrepo validate is the place to catch this
-  }
-  if (!Array.isArray(doc)) return []
-  return doc.filter(r => r && r.tier === 'gate' && r.check && Array.isArray(r.scope))
-}
-
-function relativeToRepoRoot(filePath, repoRoot) {
-  const rel = path.relative(repoRoot, filePath)
-  return rel.split(path.sep).join('/') // glob patterns in rules.yaml are POSIX-style regardless of host OS
-}
-
-function evaluateGate(rule, repoRoot, changedRelPath, newContent) {
-  const scratchDir = mkdtempSync(path.join(tmpdir(), 'memrepo-gate-'))
-  try {
-    // Mirror only what's needed: copy repoRoot's tracked files into the
-    // scratch dir (best-effort — a plain recursive copy, not git-aware;
-    // fine for the check commands this format anticipates, which grep
-    // over a subtree, not the full history).
-    cpSync(repoRoot, scratchDir, {
-      recursive: true,
-      filter: (src) => !src.includes(`${path.sep}.git${path.sep}`) && !src.includes(`${path.sep}node_modules${path.sep}`),
-    })
-
-    const scratchFilePath = path.join(scratchDir, changedRelPath)
-    mkdirSync(path.dirname(scratchFilePath), { recursive: true })
-    writeFileSync(scratchFilePath, newContent)
-
-    // check: commands are POSIX shell (SPEC.md's own examples use bash's
-    // "!" negation) — execSync's default shell is cmd.exe on Windows,
-    // which doesn't understand that syntax at all. Explicit bash makes
-    // this portable rather than silently wrong on Windows (found by
-    // testing for real: a bad check on Windows failed with "'!' is not
-    // recognized," which this function's try/catch was treating as a
-    // genuine rule violation — same wrong-block outcome as a real
-    // violation, for a completely unrelated reason).
-    execSync(rule.check, { cwd: scratchDir, stdio: 'pipe', shell: 'bash' })
-    return { pass: true }
-  } catch (e) {
-    return { pass: false, detail: e.stderr ? e.stderr.toString() : e.message }
-  } finally {
-    rmSync(scratchDir, { recursive: true, force: true })
-  }
 }
 
 function main() {
@@ -175,55 +74,40 @@ function main() {
   const gates = loadGateRules(memrepoPath, projectSlug)
   if (gates.length === 0) process.exit(0)
 
-  const pending = resolvePendingChange(toolName, toolInput, cwd)
+  const { pending, violations } = checkGates(gates, toolName, toolInput, cwd)
   if (pending === null) process.exit(0) // not a tool type this runner evaluates, or couldn't resolve what's pending
+  if (violations.length === 0) process.exit(0)
 
-  const matchingGates = gates.filter(g => g.scope.some(pattern => minimatch(pending.relPath, pattern)))
-  if (matchingGates.length === 0) process.exit(0)
+  const { gate, detail } = violations[0]
+  incrementBlocked(sessionId)
+  process.stderr.write(`Blocked by memrepo gate "${gate.id}": ${gate.rule}\n`)
+  if (detail) process.stderr.write(`Check failed: ${detail}\n`)
 
+  // Bash/Read command-pattern gates have no persistent artifact for
+  // stop.js's real-state re-check to find later (a blocked command ran
+  // nowhere, unlike a blocked Write/Edit, which leaves a real file for
+  // Stop to re-examine on retry) — recorded immediately, synchronously,
+  // right here — best-effort, never let a ledger-write failure change
+  // whether the tool call itself gets blocked.
   const isVirtualPathGate = pending.relPath === BASH_COMMAND_VIRTUAL_PATH || pending.relPath === READ_PATH_VIRTUAL_PATH
-
-  for (const gate of matchingGates) {
-    const result = evaluateGate(gate, cwd, pending.relPath, pending.content)
-    if (!result.pass) {
-      incrementBlocked(sessionId)
-      process.stderr.write(`Blocked by memrepo gate "${gate.id}": ${gate.rule}\n`)
-      if (result.detail) process.stderr.write(`Check failed: ${result.detail}\n`)
-
-      // Bash/Read command-pattern gates have no persistent artifact for
-      // stop.js's real-state re-check to find later (a blocked command
-      // ran nowhere, unlike a blocked Write/Edit, which leaves a real
-      // file for Stop to re-examine on retry) -- Stop-time folding,
-      // which every other gate type relies on, would silently never
-      // record these blocks at all. The block itself is already the
-      // complete, final outcome for this class of gate (there's no
-      // "the model retries the same shell command differently" loop the
-      // way there's a "the model edits the file again" loop) so it's
-      // recorded immediately, synchronously, right here -- best-effort,
-      // never let a ledger-write failure change whether the tool call
-      // itself gets blocked.
-      if (isVirtualPathGate) {
-        try {
-          appendDriftEntry(memrepoPath, projectSlug, {
-            timestamp: new Date().toISOString(),
-            ruleId: gate.id,
-            ruleText: gate.rule,
-            tier: 'gate',
-            evidence: `Blocked before execution — pending ${toolName} content: ${pending.content.slice(0, 200)}`,
-            attempts: 1,
-          })
-          bumpAdherenceStats(memrepoPath, projectSlug, { blocks: 1 })
-          commitDriftLedger(memrepoPath, projectSlug)
-        } catch {
-          // best-effort — never let a ledger write failure change the block outcome
-        }
-      }
-
-      process.exit(2)
+  if (isVirtualPathGate) {
+    try {
+      appendDriftEntry(memrepoPath, projectSlug, {
+        timestamp: new Date().toISOString(),
+        ruleId: gate.id,
+        ruleText: gate.rule,
+        tier: 'gate',
+        evidence: `Blocked before execution — pending ${toolName} content: ${pending.content.slice(0, 200)}`,
+        attempts: 1,
+      })
+      bumpAdherenceStats(memrepoPath, projectSlug, { blocks: 1 })
+      commitDriftLedger(memrepoPath, projectSlug)
+    } catch {
+      // best-effort — never let a ledger write failure change the block outcome
     }
   }
 
-  process.exit(0)
+  process.exit(2)
 }
 
 main()
