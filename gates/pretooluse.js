@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// P9.4 — the PreToolUse gate runner. Reads a pending Write/Edit tool call
-// from stdin (Claude Code's hook JSON shape), finds gate-tier rules in the
-// current project's rules.yaml whose scope matches the file being
-// touched, simulates the pending change in a scratch copy, runs the
-// gate's check: command against that scratch copy, and blocks (exit 2)
-// if it fails — before the real write ever happens.
+// P9.4 — the PreToolUse gate runner. Reads a pending tool call from stdin
+// (Claude Code's hook JSON shape), finds gate-tier rules in the current
+// project's rules.yaml whose scope matches, evaluates the gate's check:
+// command against the pending change, and blocks (exit 2) if it fails —
+// before the real write/command/read ever happens.
 //
 // HONEST NOTE ON FIELD NAMES: Claude Code's docs and community examples
 // disagree on the exact tool_input field name for Write's new content
@@ -15,6 +14,25 @@
 //
 // Exit 0 = allow. Exit 2 + stderr = block (Claude Code's documented
 // PreToolUse blocking contract).
+//
+// Stage 3 item 1 — extended beyond Write/Edit to cover Bash and Read.
+// Those tools don't have "pending file content" to check a rule against —
+// the thing a rule needs to see is the COMMAND ITSELF (Bash) or the PATH
+// BEING READ (Read), not any file's contents, and it must be evaluated
+// before the tool runs, never by inspecting output after the fact (by
+// the time a command has run or a file has been read, a secret is
+// already printed — checking output is checking too late). Rather than
+// extend rules.yaml's schema with a new tool-specific shape, this reuses
+// the exact existing check:-command machinery unchanged: the pending
+// command text (Bash) or file path (Read) is treated as the "content" of
+// a virtual file at a fixed, reserved path
+// (`.claude-hooks/pending-bash-command.txt` /
+// `.claude-hooks/pending-read-path.txt`), scoped in rules.yaml exactly
+// like any other file-scoped gate. A rule author writes an ordinary
+// check: command (e.g. `! grep -qE 'pattern' .claude-hooks/pending-bash-
+// command.txt`) against that virtual path — no new rules.yaml fields, no
+// new concepts, same evaluateGate() function, same scratch-copy
+// simulation, same failure semantics as every other gate.
 
 import { readFileSync, existsSync, mkdtempSync, writeFileSync, mkdirSync, rmSync, cpSync } from 'node:fs'
 import { execSync } from 'node:child_process'
@@ -23,6 +41,9 @@ import { tmpdir } from 'node:os'
 import yaml from 'js-yaml'
 import { minimatch } from 'minimatch'
 import { incrementBlocked } from './session-state.js'
+
+const BASH_COMMAND_VIRTUAL_PATH = '.claude-hooks/pending-bash-command.txt'
+const READ_PATH_VIRTUAL_PATH = '.claude-hooks/pending-read-path.txt'
 
 function readStdin() {
   try {
@@ -50,6 +71,31 @@ function resolveNewContent(toolName, toolInput, currentFilePath) {
     if (typeof toolInput.old_string !== 'string' || typeof toolInput.new_string !== 'string') return null
     if (!current.includes(toolInput.old_string)) return null // edit wouldn't apply cleanly — not this runner's problem to diagnose
     return current.replace(toolInput.old_string, toolInput.new_string)
+  }
+  return null
+}
+
+/** Stage 3 item 1 — resolves what to evaluate for a pending tool call,
+ *  across every tool type this runner understands. Returns
+ *  { relPath, content } to check gates against, or null if this tool
+ *  call isn't one this runner evaluates at all. relPath is always
+ *  forward-slash — real files go through relativeToRepoRoot(), virtual
+ *  ones are already in that form by construction. */
+function resolvePendingChange(toolName, toolInput, cwd) {
+  if (toolName === 'Write' || toolName === 'Edit') {
+    const filePath = toolInput.file_path
+    if (!filePath) return null
+    const content = resolveNewContent(toolName, toolInput, filePath)
+    if (content === null) return null // couldn't determine pending content — fail open, don't block on a guess
+    return { relPath: relativeToRepoRoot(filePath, cwd), content }
+  }
+  if (toolName === 'Bash') {
+    if (typeof toolInput.command !== 'string') return null
+    return { relPath: BASH_COMMAND_VIRTUAL_PATH, content: toolInput.command }
+  }
+  if (toolName === 'Read') {
+    if (typeof toolInput.file_path !== 'string') return null
+    return { relPath: READ_PATH_VIRTUAL_PATH, content: toolInput.file_path }
   }
   return null
 }
@@ -120,8 +166,6 @@ function main() {
   const toolInput = payload.tool_input || {}
   const cwd = payload.cwd || process.cwd()
   const sessionId = payload.session_id || 'unknown-session'
-  const filePath = toolInput.file_path
-  if (!filePath || (toolName !== 'Write' && toolName !== 'Edit')) process.exit(0)
 
   const memrepoPath = process.env.MEMREPO_PATH || path.join(process.env.HOME || '', '.outerbot', 'memrepo')
   if (!existsSync(memrepoPath)) process.exit(0) // no memrepo — nothing to gate against
@@ -130,15 +174,14 @@ function main() {
   const gates = loadGateRules(memrepoPath, projectSlug)
   if (gates.length === 0) process.exit(0)
 
-  const relPath = relativeToRepoRoot(filePath, cwd)
-  const matchingGates = gates.filter(g => g.scope.some(pattern => minimatch(relPath, pattern)))
+  const pending = resolvePendingChange(toolName, toolInput, cwd)
+  if (pending === null) process.exit(0) // not a tool type this runner evaluates, or couldn't resolve what's pending
+
+  const matchingGates = gates.filter(g => g.scope.some(pattern => minimatch(pending.relPath, pattern)))
   if (matchingGates.length === 0) process.exit(0)
 
-  const newContent = resolveNewContent(toolName, toolInput, filePath)
-  if (newContent === null) process.exit(0) // couldn't determine the pending content — fail open, don't block on a guess
-
   for (const gate of matchingGates) {
-    const result = evaluateGate(gate, cwd, relPath, newContent)
+    const result = evaluateGate(gate, cwd, pending.relPath, pending.content)
     if (!result.pass) {
       incrementBlocked(sessionId)
       process.stderr.write(`Blocked by memrepo gate "${gate.id}": ${gate.rule}\n`)

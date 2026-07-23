@@ -145,5 +145,72 @@ const remoteStats = JSON.parse(readFileSync(path.join(checkClone, 'projects', 'k
 assert(remoteStats.passes === 1 && remoteStats.blocks === 4 && remoteStats.drifts === 1, `remote adherence-stats.json matches local (got ${JSON.stringify(remoteStats)})`)
 assert(existsSync(path.join(checkClone, 'projects', 'kds-app', 'drift-ledger.md')), 'drift-ledger.md pushed to remote')
 
+// --- Scenario C (Stage 3 item 1): Bash/Read command-pattern gates, the
+// virtual-file mechanism. Fresh project dir + rules.yaml so this doesn't
+// interact with scenario A/B's file-content gate. ---
+
+const cmdProjectDir = path.join(work, 'outerbot-like')
+mkdirSync(cmdProjectDir, { recursive: true })
+mkdirSync(path.join(memrepoClone, 'projects', 'cmd-project'), { recursive: true })
+writeFileSync(path.join(memrepoClone, 'projects', 'cmd-project', 'rules.yaml'),
+  [
+    '- id: no-secret-content-reads',
+    '  rule: "Never run a content-mode read against a secret-bearing file."',
+    '  tier: gate',
+    '  check: "! grep -qE \'(cat|grep|sed|head|tail|less|strings)\\\\s+.*(ecosystem\\\\.config\\\\.js|config\\\\.local\\\\.php|\\\\.env)\' .claude-hooks/pending-bash-command.txt"',
+    '  scope: [".claude-hooks/pending-bash-command.txt"]',
+    '  origin: manual',
+    '  on_fail: block',
+    '- id: no-secret-file-reads',
+    '  rule: "Never use the Read tool against a secret-bearing file."',
+    '  tier: gate',
+    '  check: "! grep -qE \'(ecosystem\\\\.config\\\\.js|config\\\\.local\\\\.php|\\\\.env)\' .claude-hooks/pending-read-path.txt"',
+    '  scope: [".claude-hooks/pending-read-path.txt"]',
+    '  origin: manual',
+    '  on_fail: block',
+    '- id: no-pm2-restart-by-name',
+    '  rule: "Never use \'pm2 restart <name>\' -- use \'pm2 startOrRestart <ecosystem-file> --update-env\'."',
+    '  tier: gate',
+    '  check: "! grep -qE \'pm2[[:space:]]+restart[[:space:]]\' .claude-hooks/pending-bash-command.txt"',
+    '  scope: [".claude-hooks/pending-bash-command.txt"]',
+    '  origin: manual',
+    '  on_fail: block',
+  ].join('\n') + '\n')
+execFileSync('git', ['-C', memrepoClone, 'add', '-A'])
+execFileSync('git', ['-C', memrepoClone, 'commit', '-q', '-m', 'add command-pattern gates'])
+execFileSync('git', ['-C', memrepoClone, 'push', '-q', 'origin', 'master'])
+
+const cmdEnv = { MEMREPO_PATH: memrepoClone, PROJECT_SLUG: 'cmd-project' }
+
+const blockedRead = run(pretooluse, { tool_name: 'Bash', tool_input: { command: 'cat ecosystem.config.js' }, cwd: cmdProjectDir, session_id: 'cmd-session' }, cmdEnv)
+assert(blockedRead.code === 2, 'Bash "cat ecosystem.config.js" is blocked before it runs')
+assert(/no-secret-content-reads/.test(blockedRead.stderr), 'stderr names the secret-content-read rule')
+
+const blockedGrep = run(pretooluse, { tool_name: 'Bash', tool_input: { command: "sudo cat ecosystem.config.js | grep -i 'db_pass'" }, cwd: cmdProjectDir, session_id: 'cmd-session' }, cmdEnv)
+assert(blockedGrep.code === 2, 'the actual real-incident command (sudo cat ecosystem.config.js | grep) is blocked')
+
+const allowedBash = run(pretooluse, { tool_name: 'Bash', tool_input: { command: 'git status' }, cwd: cmdProjectDir, session_id: 'cmd-session' }, cmdEnv)
+assert(allowedBash.code === 0, 'an unrelated Bash command is allowed')
+
+const blockedReadTool = run(pretooluse, { tool_name: 'Read', tool_input: { file_path: '/home/outerbot/api.outer.bot/ecosystem.config.js' }, cwd: cmdProjectDir, session_id: 'cmd-session' }, cmdEnv)
+assert(blockedReadTool.code === 2, 'the Read tool against ecosystem.config.js is blocked before it runs')
+assert(/no-secret-file-reads/.test(blockedReadTool.stderr), 'stderr names the secret-file-read rule')
+
+const allowedReadTool = run(pretooluse, { tool_name: 'Read', tool_input: { file_path: path.join(cmdProjectDir, 'README.md') }, cwd: cmdProjectDir, session_id: 'cmd-session' }, cmdEnv)
+assert(allowedReadTool.code === 0, 'Read against an unrelated file is allowed')
+
+// Deterministic-on-the-command proof: the block happens with ZERO real
+// file having been touched — this env has no ecosystem.config.js at all
+// (cmdProjectDir is empty), so a content-based check would have nothing
+// to find. The command text alone is what's being judged.
+assert(!existsSync(path.join(cmdProjectDir, 'ecosystem.config.js')), 'no such file exists in this test project at all — the block is on the command text, not any file content')
+
+const blockedPm2 = run(pretooluse, { tool_name: 'Bash', tool_input: { command: 'sudo -u outerbot pm2 restart outerbot-proxy-v2 --update-env' }, cwd: cmdProjectDir, session_id: 'cmd-session' }, cmdEnv)
+assert(blockedPm2.code === 2, '"pm2 restart <name>" is blocked before it runs')
+assert(/no-pm2-restart-by-name/.test(blockedPm2.stderr), 'stderr names the pm2-restart rule')
+
+const allowedPm2 = run(pretooluse, { tool_name: 'Bash', tool_input: { command: 'sudo -u outerbot pm2 startOrRestart /home/outerbot/api.outer.bot/ecosystem.config.js --update-env' }, cwd: cmdProjectDir, session_id: 'cmd-session' }, cmdEnv)
+assert(allowedPm2.code === 0, '"pm2 startOrRestart <ecosystem-file> --update-env" is allowed')
+
 rmSync(work, { recursive: true, force: true })
 console.log(process.exitCode ? '\nSOME CHECKS FAILED' : '\nALL CHECKS PASSED')
